@@ -1,0 +1,6 @@
+#!/bin/execlineb -P
+
+# Abord: s6-svscan will exec into its finishing procedure. It will not kill any
+# of the maintained s6-supervise processes.  Stage3 (called from the finishing
+# procedure) will take care of this.
+s6-svscanctl -b /var/run/s6/services

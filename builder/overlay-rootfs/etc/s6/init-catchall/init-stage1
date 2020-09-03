@@ -58,4 +58,4 @@ fdmove -c 2 1
 ## start the supervision tree
 ##
 
-s6-svscan -t0 /var/run/s6/services
+s6-svscan -s -t0 /var/run/s6/services

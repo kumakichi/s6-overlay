@@ -6,6 +6,20 @@ execline-cd /
 # Merge environments from our custom stage into current context
 s6-envdir -I /var/run/s6/env-stage3
 
+# Stop services, in reverse order.
+foreground { s6-echo -- "[services.d] stopping services" }
+foreground
+{
+  backtick -D 5000 -n S6_KILL_SERVICE_MAXTIME { printcontenv S6_KILL_SERVICE_MAXTIME }
+  importas -u S6_KILL_SERVICE_MAXTIME S6_KILL_SERVICE_MAXTIME
+  pipeline { sv-getdeps -0 -r /var/run/s6/services }
+  forstdin -0 -- i
+  importas -u i i
+  foreground { s6-echo -- "[services.d] stopping ${i}..." }
+  if { s6-svok /var/run/s6/services/${i} }
+  s6-svc -wD -d -x -T ${S6_KILL_SERVICE_MAXTIME} /var/run/s6/services/${i}
+}
+
 # This env decides if we should call s6-sync or not (default no)
 backtick -D 0 -n S6_SYNC_DISKS { printcontenv S6_SYNC_DISKS }
 importas -u S6_SYNC_DISKS S6_SYNC_DISKS

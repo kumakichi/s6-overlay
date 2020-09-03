@@ -1,0 +1,127 @@
+#!/bin/sh
+
+PROG="$(basename $0)"
+SVSCANDIR="UNSET"
+WORKDIR="$(mktemp -d)"
+RESULT="$WORKDIR/result"
+REVERSE=0
+NULL_SEPARATOR=0
+
+set -e # Exit immediately if a command exits with a non-zero status.
+set -u # Treat unset variables as an error.
+
+exit_script() {
+    if [ "${WORKDIR:-UNSET}" != "UNSET" ]; then
+        rm -r "$WORKDIR"
+    fi
+}
+trap "exit" TERM QUIT INT
+trap "exit_script" EXIT
+
+usage() {
+    echo "$PROG: usage: $PROG [-r] svscandir"
+    exit 100
+}
+
+# Parse script arguments
+while [ $# -gt 0 ]
+do
+    key="$1"
+
+    case $key in
+        -r)
+            REVERSE=1
+            ;;
+        -0)
+            NULL_SEPARATOR=1
+            ;;
+        -*)
+            echo "ERROR: Invalid option: '$key'."
+            usage
+            exit 1
+            ;;
+        *)
+            if [ "$SVSCANDIR" = "UNSET" ]; then
+                SVSCANDIR="$key"
+                if [ ! -d "$SVSCANDIR" ]; then
+                    echo "ERROR: Directory not found: $SVSCANDIR"
+                    exit 1
+                fi
+            else
+                echo "ERROR: Invalid argument: '$key'."
+                usage
+                exit 1
+            fi
+            ;;
+    esac
+    shift
+done
+if [ "$SVSCANDIR" = "UNSET" ]; then
+    echo "ERROR: service scan directory missing."
+    usage
+    exit 1
+fi
+
+# Initialize work directory.
+find "$SVSCANDIR" -mindepth 1 -maxdepth 1 -type d -not -name ".*" -not -name "s6-*" -exec basename {} ';' | while read SVC
+do
+    [ -f "$SVSCANDIR"/"$SVC"/run ] || continue
+    [ ! -f "$SVSCANDIR"/"$SVC"/disabled ] || continue
+    touch "$WORKDIR/$SVC.stopped"
+done
+touch "$RESULT"
+echo 0 > "$WORKDIR"/deps_resolved
+
+# Start dependencies building.
+
+# First add S6 overlay services.
+find "$SVSCANDIR" -mindepth 1 -maxdepth 1 -type d -name "s6-*" -exec basename {} ';' | while read SVC
+do
+    echo "$SVC" >> "$RESULT"
+done
+
+# Then user-defined services.
+PREV_DEPS_RESOLVED=0
+while true; do
+    # For each service...
+    find "$WORKDIR" -type f -name '*.stopped' -exec basename {} .stopped ';' | while read SVC
+    do
+        # Check if dependencies of current service are all satisfied.
+        touch "$WORKDIR/$SVC.depsok"
+        find "$SVSCANDIR/$SVC" -mindepth 1 -maxdepth 1 -type f -name "*.dep" -exec basename {} .dep ';' 2>/dev/null | while read DEP
+        do
+            if [ ! -d "$SVSCANDIR/$DEP" ]; then
+                echo "ERROR: Service '$SVC' depends on unexisting service '$DEP'."
+                exit 1
+            fi
+            if [ ! -f "$WORKDIR/$DEP.started" ]; then
+                rm "$WORKDIR/$SVC.depsok"
+                break;
+            fi
+        done
+
+        # Process service if all dependencies are satisfied.
+        if [ -f "$WORKDIR/$SVC.depsok" ]; then
+            expr "$(cat "$WORKDIR"/deps_resolved)" + 1 > "$WORKDIR/"deps_resolved
+            echo "$SVC" >> "$RESULT"
+            mv "$WORKDIR/$SVC.stopped" "$WORKDIR/$SVC.started"
+        fi
+    done
+
+    if [ "$(ls "$WORKDIR"/*.stopped 2>/dev/null | wc -l)" -eq 0 ]; then
+        # All services processed.  Dependencies building done.
+        break
+    elif [ "$(cat "$WORKDIR/deps_resolved")" -eq "$PREV_DEPS_RESOLVED" ]; then
+        echo "ERROR: Circular dependency found!"
+        exit 1
+    else
+        PREV_DEPS_RESOLVED="$(cat "$WORKDIR"/deps_resolved)"
+    fi
+done
+
+# Print result.
+if [ "$NULL_SEPARATOR" -eq 0 ]; then
+    [ "$REVERSE" -eq 0 ] && cat "$RESULT" || tac "$RESULT"
+else
+    ([ "$REVERSE" -eq 0 ] && cat "$RESULT" || tac "$RESULT") | tr '\n' '\0'
+fi
